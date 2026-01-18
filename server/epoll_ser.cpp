@@ -73,7 +73,6 @@ int server_init(){
     puts("server is running");
     return ser_fd;
 }
-
 int set_unblocking(int fd){
     int flag=fcntl(fd,F_GETFL);
     if(flag==-1){
@@ -166,6 +165,7 @@ void en_resp(char msg[],int clint_fd){
     resp.fd=clint_fd;
     resp.out=string(msg);
     resp.close_after=false;
+    if(strcmp(msg,"bye\n")==0)resp.close_after=true;
     pthread_mutex_lock(&resp_mutex);
     resp_queue.push(resp);
     pthread_mutex_unlock(&resp_mutex);
@@ -449,6 +449,11 @@ void process_clint_data(Task&task){
         char msg[]="bye\n";
         en_resp(msg,clint_fd);
     }
+    else if(strcmp(cmd,"heartbeat")==0){
+        int user_id=conn->get_id(clint_fdtoname[clint_fd].c_str());
+        string sql="update user_status set last_active = NOW() where user_id ="+to_string(user_id);
+        conn->exeSQL(sql);
+    }
     pool.en_conn(conn);
 }
 void handle_response(){
@@ -468,6 +473,33 @@ void handle_response(){
             close_clint(epoll_fd,resp.fd);
         }
     }
+}
+void* check_timeout_thread(void* arg) {
+    MyDb con;
+    con.initDB(HOST, USER, PWD, DB_NAME, 3306);
+    while (1) {
+        sleep(10);
+        string ret;
+        con.select_many_SQL(
+            "select user_id from user_status "
+            "where  is_online=1 and last_active < NOW() - INTERVAL 30 SECOND",
+            ret
+        );
+        if (ret.empty()) continue;
+        char* buf = strdup(ret.c_str());
+        char* user_id = strtok(buf, "\n");
+        while (user_id) {
+            int uid = atoi(user_id);
+            string update ="update user_status set is_online=0 where user_id="+to_string(uid);
+            con.exeSQL(update);
+            string name = con.get_name(uid);
+            char msg[]="bye\n";
+            en_resp(msg,clint_nametofd[name]);
+            user_id = strtok(NULL, "\n");
+        }
+        free(buf);
+    }
+    return nullptr;
 }
 
 int main(int argc,char*argv[]){

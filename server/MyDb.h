@@ -2,6 +2,7 @@
 #include<string>
 #include<mysql/mysql.h>
 #include<iostream>
+#include<vector>
 using namespace std;
 typedef unsigned long long ull;
 
@@ -18,7 +19,21 @@ public:
     bool select_one_SQL(string sql,string& str);
     bool select_many_SQL(string sql,string& str);
     int get_id(const char* name);
+    string get_name(int user_id);
 };
+
+
+string MyDb::get_name(int user_id){
+    string sql="select user_name from user where user_id="+to_string(user_id);
+    if(mysql_query(mysql,sql.c_str())){
+        cout<<"Query Error:"<<mysql_error(mysql);
+        return "";
+    }
+    result=mysql_store_result(mysql);
+    if(!result)return "";
+    row=mysql_fetch_row(result);
+    return row[0];
+}
 int MyDb::get_id(const char* name){
     string sql="select user_id from user where user_name='"+string(name)+"'";
     if(mysql_query(mysql,sql.c_str())){
@@ -26,8 +41,8 @@ int MyDb::get_id(const char* name){
         return -1;
     }
     result=mysql_store_result(mysql);
+    if(!result)return -1;
     row=mysql_fetch_row(result);
-    if(!row)return -1;
     return atoi(row[0]);
 }
 

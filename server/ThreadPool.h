@@ -10,6 +10,7 @@ private:
     vector<pthread_t>workers;
     queue<MyDb*>db_pool;
     bool stop;
+    pthread_mutex_t db_mutex;
     static void* worker(void*arg);
 public:
     ThreadPool(int thread_num);
@@ -19,18 +20,23 @@ public:
     void en_conn(MyDb* conn);
 };
 MyDb* ThreadPool::get_conn(){
+    pthread_mutex_lock(&db_mutex);
     MyDb* conn=db_pool.front();
     db_pool.pop();
+    pthread_mutex_unlock(&db_mutex);
     return conn;
 }
 void ThreadPool::en_conn(MyDb*conn){
+    pthread_mutex_lock(&db_mutex);
     db_pool.push(conn);
+    pthread_mutex_unlock(&db_mutex);
 }
 
 ThreadPool::ThreadPool(int thread_num){
     stop=false;
     pthread_mutex_init(&mutex,NULL);
     pthread_cond_init(&cond,NULL);
+    pthread_mutex_init(&db_mutex,NULL);
     pthread_t t_id;
     for(int i=0;i<thread_num;i++){
         MyDb* conn=new MyDb();
@@ -73,6 +79,11 @@ ThreadPool::~ThreadPool(){
     pthread_cond_broadcast(&cond);//唤醒所有线程，结束了
     for(auto&t_id:workers){
         pthread_join(t_id,NULL);
+    }
+    while(!db_pool.empty()){
+        MyDb*conn=db_pool.front();
+        db_pool.pop();
+        delete conn;
     }
     pthread_mutex_destroy(&mutex);
     pthread_cond_destroy(&cond);

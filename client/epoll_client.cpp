@@ -5,7 +5,7 @@ char username[512];
 char password[512];
 
 struct epoll_event event,events[EVENTS_NUM];
-pthread_t t_id;
+pthread_t t_id,hb_tid;
 
 int set_unblocking(int fd){
     int flag=fcntl(fd,F_GETFL);
@@ -210,6 +210,7 @@ bool handle_pipe_input(){
             }
             break;
         case state_broadcast_chat_msg:
+            buf[strchr(buf,'\n')-buf]=0;
             snprintf(msg,BUF_SIZE-1,"broadcast_chat|%s",buf);
             send_message(msg,strlen(msg));
             cur_state=state_wait_resp;
@@ -221,6 +222,7 @@ bool handle_pipe_input(){
             puts("请输入要发送的信息");
             break;
         case state_multi_chat_msg:
+            buf[strchr(buf,'\n')-buf]=0;
             snprintf(msg,BUF_SIZE-1,"multi_chat|%s|%s",username,buf);
             send_message(msg,strlen(msg));
             cur_state=state_wait_resp;
@@ -418,10 +420,24 @@ void finish(){
     puts("已断开连接");
     pthread_cancel(t_id);
     pthread_join(t_id,NULL);
+    pthread_cancel(hb_tid);
+    pthread_join(hb_tid,NULL);
     close(clint_fd);
     close(epoll_fd);
     close(pipe_fd[0]);
     close(pipe_fd[1]);
+}
+//用于心跳检测
+void*heartbeat_thread(void*arg){
+    int sockfd=*(int*)arg;
+    const char*msg="heartbeat|";
+    while(1){
+        sleep(30);
+        if(send_message(msg,strlen(msg))==false){
+            break;
+        }
+    }
+    return NULL;
 }
 
 
@@ -448,6 +464,7 @@ int main(int argc,char*argv[]){
         finish();
         exit(1);
     }
+    pthread_create(&hb_tid,NULL,heartbeat_thread,&clint_fd);
     bool running=true;
     while(running){
         int event_num=epoll_wait(epoll_fd,events,EVENTS_NUM,-1);
