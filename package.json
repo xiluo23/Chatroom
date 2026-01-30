@@ -1,0 +1,23 @@
+{
+  "name": "chatroom",
+  "version": "1.0.0",
+  "description": "",
+  "main": "gateway.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiluo23/Chatroom.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/xiluo23/Chatroom/issues"
+  },
+  "homepage": "https://github.com/xiluo23/Chatroom#readme",
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

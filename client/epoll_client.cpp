@@ -3,9 +3,11 @@ ClientState cur_state=state_connect;
 int clint_fd,epoll_fd,str_len,send_len,total_len,recv_len,pipe_fd[2];//pipe_fd[0]:读,pipe_fd[1]:写
 char username[512];
 char password[512];
+ClientBuffer client_recv_buffer;  // 接收缓冲区
 
 struct epoll_event event,events[EVENTS_NUM];
 pthread_t t_id,hb_tid;
+bool heartbeat_started=false;  // 标志心跳线程是否已启动
 
 int set_unblocking(int fd){
     int flag=fcntl(fd,F_GETFL);
@@ -26,6 +28,11 @@ void sign_in(){
 void sign_in_resp(const char*code,const char*msg){
     if (strcmp(code, "1") == 0) {
         printf("登录成功\n");
+        // 登录成功后启动心跳线程
+        if(!heartbeat_started){
+            pthread_create(&hb_tid,NULL,heartbeat_thread,&clint_fd);
+            heartbeat_started=true;
+        }
         puts("输入3查询在线用户");
         puts("输入4单播通信");
         puts("输入5多播通信");
@@ -83,9 +90,6 @@ void single_chat(){
         puts("请输入文本");
     }
 }
-void broadcast_chat(){
-
-}
 void show_history(char* code,char*msg){
     if(strcmp(code,"1")==0){
         puts("发送者  接收者  时间     类型    内容");
@@ -108,45 +112,80 @@ void*handle_stdin(void*argv){//副线程处理用户输入数据，并通过管�
     return NULL;
 }
 bool recv_message(){
-    char buf[BUF_SIZE];
-    total_len=0;
+    // 接收新数据并填充缓冲区
+    int bytes_read;
+    char temp_buf[BUF_SIZE];
+    
     while(1){
-        str_len=recv(clint_fd,buf+total_len,BUF_SIZE-1-total_len,0);
-        if(str_len==-1){
-            if(errno==EAGAIN||errno==EWOULDBLOCK){
-                break;
+        bytes_read = recv(clint_fd, temp_buf, BUF_SIZE, 0);
+        if(bytes_read == -1){
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                break;  // 无数据可读
             }
             else{
                 perror("Error:");
                 return false;
             }
         }
-        else if(str_len==0){
-            return false;
+        else if(bytes_read == 0){
+            return false;  // 连接关闭
         }
-        total_len+=str_len;
+        else{
+            // 将新数据追加到缓冲区
+            if(client_recv_buffer.pos + bytes_read <= PROTOCOL_MAX_TOTAL_SIZE){
+                memcpy(client_recv_buffer.buffer + client_recv_buffer.pos, temp_buf, bytes_read);
+                client_recv_buffer.pos += bytes_read;
+            }
+            else{
+                perror("Buffer overflow");
+                return false;
+            }
+        }
     }
-    buf[total_len]=0;
-    // puts(buf);
-    handle_server_message(buf);
+    
+    // 从缓冲区中提取完整的消息
+    string message;
+    while(true){
+        int consumed = extractMessage(client_recv_buffer.buffer, client_recv_buffer.pos, message);
+        if(consumed == -1){
+            // 消息不完整，等待更多数据
+            break;
+        }
+        else if(consumed == -2){
+            // 消息长度无效，清理缓冲区的前4个字节并重新尝试
+            printf("Warning: Invalid message detected, cleaning buffer\n");
+            if(client_recv_buffer.pos > 1){
+                // 移除第一个字节，尝试重新同步
+                memmove(client_recv_buffer.buffer, client_recv_buffer.buffer + 1, client_recv_buffer.pos - 1);
+                client_recv_buffer.pos -= 1;
+            }
+            else{
+                // 缓冲区太小，清空它
+                client_recv_buffer.pos = 0;
+                break;
+            }
+        }
+        else if(consumed == 0){
+            // 缓冲区为空
+            break;
+        }
+        else{
+            // 成功提取一个完整消息
+            handle_server_message(message.c_str());
+            
+            // 从缓冲区中移除已处理的数据
+            memmove(client_recv_buffer.buffer, client_recv_buffer.buffer + consumed, 
+                   client_recv_buffer.pos - consumed);
+            client_recv_buffer.pos -= consumed;
+        }
+    }
+    
     return true;
 }
 bool send_message(const char buf[],int len){
-    // printf("[DEBUG] sending message to clint_fd=%d\n", clint_fd);
-    int total = 0;
-    while (total < len) {
-        int n = send(clint_fd, buf + total, len - total, 0);
-        if (n > 0) {
-            total += n;
-        } 
-        else if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            continue; 
-        } 
-        else {
-            return false;
-        }
-    }
-    return true;
+    // 使用协议编码消息
+    cout<<"编码后消息："<<encodeMessage(string(buf,len))<<endl;
+    return sendMessage(clint_fd, string(buf, len));
 }
 
 bool handle_pipe_input(){
@@ -306,7 +345,7 @@ void multi_chat_resp(char*code,char*msg){
     else if(strcmp(code,"2")==0){
         char*from=strtok(msg,";");
         char*text=strtok(NULL,";");
-        printf("收到%s发送的信息:%s",from,text);
+        printf("收到%s发送的信息:%s\n",from,text);
     }
     else{
         puts("请重试");
@@ -321,7 +360,7 @@ void broadcast_chat_resp(char*code,char*msg){
     else if(strcmp(code,"2")==0){
         char*from=strtok(msg,";");
         char*text=strtok(NULL,";");
-        printf("收到%s发送的信息:%s",from,text);
+        printf("收到%s发送的信息:%s\n",from,text);
     }
     else{
         puts("请重试");
@@ -361,6 +400,18 @@ void handle_server_message(const char*msg){//eg:sign_up|0|注册成功
     }
     else if(strcmp(type,"broadcast_chat")==0){
         broadcast_chat_resp(code,text);
+    }
+    else if(strcmp(type,"heartbeat")==0){
+        if(strcmp(code,"1")==0){
+            // printf("[DEBUG] 心跳成功\n");  // 可选：不输出以减少刷屏
+        }
+        else{
+            printf("心跳检测失败: %s\n",text);
+        }
+    }
+    else if(strcmp(type,"bye")==0){
+        printf("服务器主动断开连接: %s\n",text);
+        cur_state=state_connect;
     }
 }
 bool clint_init(){
@@ -430,10 +481,11 @@ void finish(){
 //用于心跳检测
 void*heartbeat_thread(void*arg){
     int sockfd=*(int*)arg;
-    const char*msg="heartbeat|";
+    const char*msg="heartbeat";
     while(1){
-        sleep(30);
+        sleep(15);  // 每15秒发送一次心跳，保活连接（小于30秒超时）
         if(send_message(msg,strlen(msg))==false){
+            printf("心跳发送失败，连接已断开\n");
             break;
         }
     }
@@ -464,7 +516,7 @@ int main(int argc,char*argv[]){
         finish();
         exit(1);
     }
-    pthread_create(&hb_tid,NULL,heartbeat_thread,&clint_fd);
+    // 不再在这里创建心跳线程，而是在登录成功后创建
     bool running=true;
     while(running){
         int event_num=epoll_wait(epoll_fd,events,EVENTS_NUM,-1);

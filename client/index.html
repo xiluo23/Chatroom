@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>聊天室 Web 客户端</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; }
+    #sidebar { width: 260px; border-right: 1px solid #ccc; padding: 10px; box-sizing: border-box; background: #f8f8f8; }
+    #main { flex: 1; display: flex; flex-direction: column; }
+    h2 { margin: 8px 0; font-size: 16px; }
+    input, button, textarea { margin: 4px 0; }
+    button { cursor: pointer; padding: 4px 8px; }
+    #log { flex: 1; border-bottom: 1px solid #ccc; padding: 10px; overflow-y: auto; white-space: pre-wrap; background: #fff; }
+    #input-area { padding: 10px; display: flex; flex-direction: column; background: #fafafa; }
+    #online-users { height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 4px; font-size: 13px; background: #fff; }
+    label { font-size: 13px; }
+    .row { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>连接 / 登录</h2>
+    <button id="btn-connect">连接服务器</button>
+    <div class="row">
+      <label>用户名：</label><br />
+      <input id="username" type="text" />
+    </div>
+    <div class="row">
+      <label>密码：</label><br />
+      <input id="password" type="password" />
+    </div>
+    <button id="btn-signup">注册 (sign_up)</button>
+    <button id="btn-signin">登录 (sign_in)</button>
+
+    <h2>在线用户</h2>
+    <button id="btn-refresh-online">刷新 (show_online_user)</button>
+    <div id="online-users"></div>
+
+    <h2>其他</h2>
+    <button id="btn-history">查看历史 (show_history)</button>
+    <button id="btn-quit">退出 (q)</button>
+  </div>
+
+  <div id="main">
+    <div id="log"></div>
+
+    <div id="input-area">
+      <div class="row">
+        <label>单聊目标用户名：</label>
+        <input id="single-to" type="text" />
+        <button id="btn-single">发送单聊 (single_chat)</button>
+      </div>
+      <div class="row">
+        <label>群聊目标（空格分隔用户名）：</label>
+        <input id="multi-to" type="text" />
+        <button id="btn-multi">发送群聊 (multi_chat)</button>
+      </div>
+      <div class="row">
+        <label>广播消息：</label>
+        <input id="broadcast-text" type="text" />
+        <button id="btn-broadcast">发送广播 (broadcast_chat)</button>
+      </div>
+      <div class="row">
+        <label>消息内容：</label><br />
+        <textarea id="msg-text" rows="3"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let heartbeatTimer = null;
+
+    function log(msg) {
+      const logDiv = document.getElementById('log');
+      logDiv.textContent += msg + "\n";
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    function connect() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        log("已连接，无需重复连接。");
+        return;
+      }
+      ws = new WebSocket("ws://192.168.147.130:9000"); // 对接 Node.js 网关
+
+      ws.onopen = () => {
+        log("WebSocket 已连接到网关。");
+        // 启动心跳（对应服务器 heartbeat）
+        heartbeatTimer = setInterval(() => {
+          sendRaw("heartbeat");
+        }, 10000);
+      };
+
+      ws.onmessage = (event) => {
+        handleServerMsg(event.data);
+      };
+
+      ws.onclose = () => {
+        log("WebSocket 连接已关闭。");
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+
+      ws.onerror = (err) => {
+        log("WebSocket 错误：" + err);
+      };
+    }
+
+    function sendRaw(text) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log("还未连接服务器。");
+        return;
+      }
+      ws.send(text);
+      console.log("发送:", text);
+    }
+
+    function handleServerMsg(raw) {
+      console.log("收到:", raw);
+      const lines = raw.split(/\r?\n/).filter(x => x.trim() !== "");
+      for (const line of lines) {
+        const parts = line.split("|");
+        const cmd = parts[0];
+        if (!cmd) continue;
+
+        switch (cmd) {
+          case "sign_up": {
+            const ok = parts[1];
+            const info = parts[2] || "";
+            if (ok === "1") log("注册成功：" + info);
+            else log("注册失败：" + info);
+            break;
+          }
+          case "sign_in": {
+            const ok = parts[1];
+            const info = parts[2] || "";
+            if (ok === "1") {
+              log("登录成功：" + info);
+            } else {
+              log("登录失败：" + info);
+            }
+            break;
+          }
+          case "show_online_user": {
+            const ok = parts[1];
+            const data = parts[2] || "";
+            if (ok === "1") {
+              document.getElementById("online-users").textContent = data;
+              log("在线用户列表更新。");
+            } else {
+              log("获取在线用户失败：" + (parts[2] || ""));
+            }
+            break;
+          }
+          case "single_chat": {
+            const status = parts[1];
+            const payload = parts[2] || "";
+            if (status === "1") {
+              const [from, text] = payload.split(";");
+              log(`[单聊][来自 ${from}] ${text}`);
+            } else if (status === "2") {
+              log("[单聊][发送结果] " + payload);
+            } else {
+              log("[单聊] 未知状态：" + line);
+            }
+            break;
+          }
+          case "multi_chat": {
+            const status = parts[1];
+            const payload = parts[2] || "";
+            if (status === "1") {
+              log("[群聊][发送结果] " + payload);
+            } else if (status === "2") {
+              const [from, text] = payload.split(";");
+              log(`[群聊][来自 ${from}] ${text}`);
+            } else {
+              log("[群聊] 未知状态：" + line);
+            }
+            break;
+          }
+          case "broadcast_chat": {
+            const status = parts[1];
+            const payload = parts[2] || "";
+            if (status === "1") {
+              log("[广播][发送结果] " + payload);
+            } else if (status === "2") {
+              const [from, text] = payload.split(";");
+              log(`[广播][来自 ${from}] ${text}`);
+            } else {
+              log("[广播] 未知状态：" + line);
+            }
+            break;
+          }
+          case "chat_unread": {
+            const ok = parts[1];
+            const data = parts[2] || "";
+            if (ok === "1") {
+              log("[未读消息]\n" + data);
+            } else {
+              log("[未读消息] 获取失败");
+            }
+            break;
+          }
+          case "show_history": {
+            const ok = parts[1];
+            const data = parts[2] || "";
+            if (ok === "1") {
+              log("[历史记录]\n" + data);
+            } else {
+              log("[历史记录] 获取失败");
+            }
+            break;
+          }
+          case "bye": {
+            log("服务器要求断开连接。");
+            // 清理心跳定时器
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer);
+              heartbeatTimer = null;
+            }
+            if (ws) {
+              ws.close();
+              ws = null;
+            }
+            break;
+          }
+          default:
+            log("[原始] " + line);
+        }
+      }
+    }
+
+    window.onload = () => {
+      document.getElementById("btn-connect").onclick = connect;
+
+      document.getElementById("btn-signup").onclick = () => {
+        const u = document.getElementById("username").value.trim();
+        const p = document.getElementById("password").value.trim();
+        if (!u || !p) { log("请输入用户名和密码。"); return; }
+        sendRaw(`sign_up|${u}|${p}`);
+      };
+
+      document.getElementById("btn-signin").onclick = () => {
+        const u = document.getElementById("username").value.trim();
+        const p = document.getElementById("password").value.trim();
+        if (!u || !p) { log("请输入用户名和密码。"); return; }
+        sendRaw(`sign_in|${u}|${p}`);
+      };
+
+      document.getElementById("btn-refresh-online").onclick = () => {
+        sendRaw("show_online_user");
+      };
+
+      document.getElementById("btn-history").onclick = () => {
+        sendRaw("show_history");
+      };
+
+      document.getElementById("btn-quit").onclick = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          log("未连接到服务器，无法退出。");
+          return;
+        }
+        log("正在退出...");
+        sendRaw("q\n");
+        // 清理心跳定时器
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+        // 等待服务器返回 bye 后会自动关闭（在 handleServerMsg 的 bye case 中处理）
+      };
+
+      document.getElementById("btn-single").onclick = () => {
+        const to = document.getElementById("single-to").value.trim();
+        const text = document.getElementById("msg-text").value.trim();
+        if (!to || !text) { log("单聊需要填写目标用户名和消息。"); return; }
+        sendRaw(`single_chat|${to}|${text}`);
+      };
+
+      document.getElementById("btn-multi").onclick = () => {
+        const tos = document.getElementById("multi-to").value.trim();
+        const text = document.getElementById("msg-text").value.trim();
+        if (!tos || !text) { log("群聊需要填写多个用户名和消息。"); return; }
+        sendRaw(`multi_chat|${tos}|${text}`);
+      };
+
+      document.getElementById("btn-broadcast").onclick = () => {
+        const text = document.getElementById("broadcast-text").value.trim() ||
+                     document.getElementById("msg-text").value.trim();
+        if (!text) { log("请输入广播消息。"); return; }
+        sendRaw(`broadcast_chat|${text}`);
+      };
+    };
+  </script>
+</body>
+</html>
+
+

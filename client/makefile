@@ -1,5 +1,5 @@
 .PHONY: all clean
-CFLAGS = -Wall -g -O2
+CFLAGS = -Wall -g -O2 -I../server
 targets = client
 sources = epoll_client.cpp epoll_client.h
 objects = epoll_client.o
